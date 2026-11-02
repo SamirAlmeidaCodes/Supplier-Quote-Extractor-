@@ -1,0 +1,29 @@
+# Server settings for the local container. No secrets file is read.
+
+[server]
+headless = true
+address = "0.0.0.0"
+port = 8501
+enableCORS = true
+enableXsrfProtection = true
+maxUploadSize = 20
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#1F3A4D"
+backgroundColor = "#F7F6F3"
+secondaryBackgroundColor = "#EEF2F4"
+textColor = "#1F2933"
+borderColor = "#E4E0D8"
+showSidebarBorder = true
+font = "sans serif"
+# Quoted strings. An unquoted number is ignored by Streamlit.
+paddingTop = "1.4rem"
+paddingBottom = "2rem"
