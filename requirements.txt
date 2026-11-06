@@ -1,14 +1,13 @@
 # Runtime dependencies for Supplier Quote Extractor.
-# Lower bounds are the oldest releases this code is written against.
-# The image installs these wheels. No dependency is used to read secrets.
+# Versions are pinned to the set exercised by the test suite.
+# Audit them with ./scripts/audit_deps.sh (pip-audit).
+# No dependency is imported to read secrets. python-dotenv is unused.
 
-streamlit>=1.40,<2
-pydantic>=2.7,<3
-pdf2image>=1.17
-Pillow>=10.3
-pandas>=2.2
-openpyxl>=3.1
-httpx>=0.27
-# Present because the requested stack includes it. The application never
-# calls load_dotenv and never reads API keys from a file or the environment.
-python-dotenv>=1.0.1
+streamlit==1.66.1
+pydantic==2.14.2
+pdf2image==1.17.0
+Pillow==13.0.0
+pandas==3.1.0
+openpyxl==3.1.5
+httpx==0.28.1
+python-dotenv==1.2.4

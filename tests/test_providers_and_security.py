@@ -1,10 +1,14 @@
 """Provider requests, redaction, and the no-secrets rule."""
 
+import asyncio
 import json
+import logging
+import subprocess
 from pathlib import Path
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from app.errors import AppError
 from app.providers import (
@@ -14,6 +18,10 @@ from app.providers import (
     OpenAIProvider,
     XAIProvider,
 )
+from app.http_security import SecurityHeadersMiddleware
+from app.inputs import SessionSettings, checked_api_key, checked_model
+from app.limits import ExtractionRateLimiter
+from app.logging_setup import configure_logging
 from app.redact import redact
 from app.schema import QUOTE_JSON_SCHEMA
 
@@ -211,3 +219,108 @@ def test_container_config_has_no_secret_channel() -> None:
         assert "sk-" not in text
     assert "secrets:" not in compose
     assert "poppler-utils" in dockerfile
+    assert "user appuser" in dockerfile
+    assert "app/asgi.py" in dockerfile
+    assert 'user: "10001:10001"' in compose
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8").lower()
+    assert ".env" in dockerignore
+    assert "*.pem" in dockerignore
+    assert "*.key" in dockerignore
+
+
+def test_api_key_rejects_header_injection_and_model_ids_stay_in_one_segment() -> None:
+    with pytest.raises(AppError):
+        checked_api_key("sk-test-secret\r\nX-Injected: 1-extra")
+    with pytest.raises(AppError):
+        checked_model("../gemini-2.5-flash")
+    with pytest.raises(AppError):
+        checked_model("demo model")
+
+
+def test_invalid_session_settings_do_not_echo_the_key() -> None:
+    secret = "super-secret-value-not-for-logs"
+    with pytest.raises(ValidationError) as caught:
+        SessionSettings(
+            provider_id="xai",
+            provider_label="xAI (Grok)",
+            api_key=secret + " has spaces",
+            model="grok-4.7",
+            mode="combined",
+            threshold=0.7,
+        )
+    assert secret not in str(caught.value)
+
+
+def test_rate_limiter_enforces_interval_and_process_cap() -> None:
+    now = {"value": 100.0}
+
+    def clock() -> float:
+        return now["value"]
+
+    limiter = ExtractionRateLimiter(min_interval=3.0, max_per_minute=2, clock=clock)
+    assert limiter.check("session-a") is None
+    assert limiter.check("session-a") is not None
+    now["value"] += 3.0
+    assert limiter.check("session-b") is None
+    now["value"] += 3.0
+    assert "minute" in (limiter.check("session-c") or "")
+
+
+def test_log_records_drop_secrets_tracebacks_and_paths(caplog: pytest.LogCaptureFixture) -> None:
+    configure_logging()
+    logger = logging.getLogger("app.security_test")
+    try:
+        raise RuntimeError(f"failed at /tmp/internal/app.py with {SECRET}")
+    except RuntimeError:
+        logger.exception("saw %s", SECRET)
+    text = caplog.text
+    assert SECRET not in text
+    assert "Traceback" not in text
+    assert "/tmp/internal" not in text
+
+
+def test_security_headers_are_added_to_http_responses() -> None:
+    async def exercise() -> list[dict]:
+        sent: list[dict] = []
+
+        async def app(scope: dict, receive: object, send: object) -> None:
+            del scope, receive
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        async def receive() -> dict:
+            return {"type": "http.request", "body": b""}
+
+        async def send(message: dict) -> None:
+            sent.append(message)
+
+        await SecurityHeadersMiddleware(app)({"type": "http"}, receive, send)
+        return sent
+
+    sent = asyncio.run(exercise())
+    headers = dict(sent[0]["headers"])
+    assert headers[b"x-content-type-options"] == b"nosniff"
+    assert headers[b"x-frame-options"] == b"DENY"
+    assert headers[b"referrer-policy"] == b"no-referrer"
+    assert b"frame-ancestors 'none'" in headers[b"content-security-policy"]
+
+
+def test_asgi_entrypoint_imports_with_headers_and_debug_off() -> None:
+    import importlib
+
+    module = importlib.import_module("app.asgi")
+    assert module.app._debug is False
+    assert module._UI_SCRIPT.name == "main.py"
+    assert any(item.cls.__name__ == "SecurityHeadersMiddleware" for item in module.app._user_middleware)
+
+
+def test_env_files_and_private_keys_are_gitignored() -> None:
+    ignored = subprocess.check_output(
+        ["git", "check-ignore", ".env", ".env.production", "secrets/key.pem", "logs/app.log"],
+        cwd=ROOT,
+        text=True,
+    )
+    assert ".env" in ignored.split()
+    assert "secrets/key.pem" in ignored.split()
+    example = subprocess.run(["git", "check-ignore", ".env.example"], cwd=ROOT, capture_output=True)
+    assert example.returncode != 0

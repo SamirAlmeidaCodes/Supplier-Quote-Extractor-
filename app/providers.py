@@ -27,8 +27,9 @@ from urllib.parse import quote
 
 import httpx
 
-from app.config import MAX_API_KEY_LENGTH, MIN_API_KEY_LENGTH, REQUEST_TIMEOUT_SECONDS, RETRY_STATUSES
+from app.config import REQUEST_TIMEOUT_SECONDS, RETRY_STATUSES
 from app.errors import AppError
+from app.inputs import checked_api_key, checked_model
 from app.redact import redact
 
 TIMEOUT = httpx.Timeout(REQUEST_TIMEOUT_SECONDS, connect=15.0)
@@ -315,17 +316,11 @@ def get_provider(provider_id: str) -> VisionProvider:
 
 
 def _checked_key(api_key: str) -> str:
-    key = (api_key or "").strip()
-    if len(key) < MIN_API_KEY_LENGTH or len(key) > MAX_API_KEY_LENGTH or any(char.isspace() for char in key):
-        raise AppError("Paste a valid API key for the selected provider. The key stays in this session only.")
-    return key
+    return checked_api_key(api_key)
 
 
 def _checked_model(model: str) -> str:
-    name = (model or "").strip()
-    if not name or len(name) > 120 or any(char.isspace() for char in name):
-        raise AppError("Enter a model id with no spaces, or leave the override blank to use the default.")
-    return name
+    return checked_model(model)
 
 
 def _post_for_json(

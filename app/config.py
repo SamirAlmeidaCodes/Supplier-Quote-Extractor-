@@ -13,6 +13,13 @@ from app.errors import AppError
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_PAGES = 10
+MAX_TEXT_CHARS = 4000
+MAX_LINE_ITEMS = 400
+MAX_MODEL_WARNINGS = 30
+MAX_WARNING_CHARS = 500
+PDF_RENDER_TIMEOUT_SECONDS = 60
+EXTRACT_MIN_INTERVAL_SECONDS = 3.0
+EXTRACT_MAX_PER_MINUTE = 12
 # Vision requests get expensive and large quickly. Longer documents are split
 # into batches of this size and merged after validation.
 MAX_PAGES_PER_REQUEST = 4

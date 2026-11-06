@@ -1,3 +1,37 @@
+# Secrets and local environment files.
+# .env.example is a tracked dummy template. Real env files are never committed.
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.kdbx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+.streamlit/secrets.toml
+
+# Local databases, exports, and logs
+data/
+uploads/
+temp/
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-journal
+*.csv
+*.xlsx
+*.xls
+
+# Python caches and virtualenvs
 venv/
 .venv/
 __pycache__/
@@ -7,25 +41,24 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.env
-.env.local
-.env.*.local
-*.env
-.streamlit/secrets.toml
-data/
-uploads/
-temp/
-*.csv
-*.xlsx
-*.xls
-models/
-*.joblib
-*.pkl
 .ipynb_checkpoints/
+
+# Large local model artifacts
+models/
+*.gguf
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.h5
+*.ckpt
+*.pkl
+*.joblib
+
+# Editor and OS files
 .idea/
 .vscode/
 *.swp
 *.swo
 .DS_Store
 Thumbs.db
-*.log

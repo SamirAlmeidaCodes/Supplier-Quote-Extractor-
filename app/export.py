@@ -15,6 +15,27 @@ from app.quality import QualityIssue
 
 _NUMERIC_LINE_COLUMNS = ("Quantity", "Unit price", "Line total")
 _NUMERIC_HEADER_FIELDS = {"Subtotal", "Tax", "Grand total"}
+_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _neutralize_cell(value: object) -> object:
+    """Stop a text cell from being interpreted as a spreadsheet formula."""
+
+    if not isinstance(value, str):
+        return value
+    probe = value.lstrip(" \t\r\n")
+    if probe[:1] in _FORMULA_PREFIXES:
+        return "'" + value
+    return value
+
+
+def _neutralize_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    output = frame.copy()
+    for column in output.columns:
+        output[column] = [_neutralize_cell(value) for value in output[column].tolist()]
+    return output
 
 
 def build_csv(header: pd.DataFrame, lines: pd.DataFrame) -> bytes:
@@ -53,7 +74,7 @@ def _flat_frame(header: pd.DataFrame, lines: pd.DataFrame) -> pd.DataFrame:
     front = [column for column in header_values if column in body.columns]
     rest = [column for column in body.columns if column not in front]
     ordered = body[front + rest]
-    return _coerce_numeric(ordered, _NUMERIC_LINE_COLUMNS + tuple(_NUMERIC_HEADER_FIELDS))
+    return _neutralize_frame(_coerce_numeric(ordered, _NUMERIC_LINE_COLUMNS + tuple(_NUMERIC_HEADER_FIELDS)))
 
 
 def _typed_header(header: pd.DataFrame) -> pd.DataFrame:
@@ -71,12 +92,12 @@ def _typed_header(header: pd.DataFrame) -> pd.DataFrame:
             typed_values.append(raw)
     frame = frame.copy()
     frame["Value"] = typed_values
-    return frame
+    return _neutralize_frame(frame)
 
 
 def _typed_lines(lines: pd.DataFrame) -> pd.DataFrame:
     frame = lines.copy() if lines is not None else pd.DataFrame()
-    return _coerce_numeric(frame, _NUMERIC_LINE_COLUMNS)
+    return _neutralize_frame(_coerce_numeric(frame, _NUMERIC_LINE_COLUMNS))
 
 
 def _coerce_numeric(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
@@ -96,8 +117,10 @@ def _coerce_numeric(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFra
 def _issues_frame(issues: list[QualityIssue]) -> pd.DataFrame:
     if not issues:
         return pd.DataFrame([{"Severity": "", "Field": "", "Message": "No review flags."}])
-    return pd.DataFrame(
-        [{"Severity": issue.severity, "Field": issue.field, "Message": issue.message} for issue in issues]
+    return _neutralize_frame(
+        pd.DataFrame(
+            [{"Severity": issue.severity, "Field": issue.field, "Message": issue.message} for issue in issues]
+        )
     )
 
 

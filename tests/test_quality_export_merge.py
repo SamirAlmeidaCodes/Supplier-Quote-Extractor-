@@ -60,6 +60,25 @@ def test_decimal_parser_accepts_both_separators() -> None:
     assert parse_decimal("") is None
 
 
+def test_exports_neutralize_formula_cells() -> None:
+    header = header_frame(expected_quote())
+    header.loc[header["Field"] == "Supplier", "Value"] = "=HYPERLINK(\"http://example.test\")"
+    lines = line_frame(expected_quote())
+    lines.loc[0, "SKU"] = "+1+1"
+    lines.loc[0, "Description"] = "@SUM(A1)"
+    csv_text = build_csv(header, lines).decode("utf-8")
+    assert "'=HYPERLINK" in csv_text
+    assert "'+1+1" in csv_text
+    assert "'@SUM(A1)" in csv_text
+
+    workbook = load_workbook(io.BytesIO(build_excel(header, lines, [])))
+    for sheet in workbook.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str):
+                    assert not cell.value.lstrip(" \t'\r\n").startswith(("=", "+", "-", "@")) or cell.value.startswith("'")
+
+
 def test_csv_and_excel_round_trip() -> None:
     quote = expected_quote()
     header = header_frame(quote)

@@ -8,18 +8,24 @@ shrunk so a multi-page request stays inside provider image limits.
 from __future__ import annotations
 
 import io
+import shutil
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+from pydantic import ValidationError
 
 from app.config import (
     JPEG_QUALITY_START,
     MAX_EDGE_PX,
     MAX_PAGES,
     MAX_UPLOAD_BYTES,
+    PDF_RENDER_TIMEOUT_SECONDS,
     TARGET_IMAGE_BYTES,
 )
 from app.errors import AppError
+from app.inputs import UploadConstraints, path_within
 
 PDF_SIGNATURE = b"%PDF"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -54,8 +60,10 @@ def load_document(data: bytes, filename: str) -> PreparedDocument:
         raise AppError("The file is empty.")
     if len(data) > MAX_UPLOAD_BYTES:
         raise AppError("The file is larger than 20 MB. Export a smaller PDF or a single photo.")
-
-    name = filename or "quote"
+    try:
+        name = UploadConstraints(filename=filename or "quote", size=len(data)).filename
+    except ValidationError:
+        raise AppError("Upload a PDF, JPEG, or PNG. Other file types are not read.") from None
     if data.startswith(PDF_SIGNATURE) or name.lower().endswith(".pdf"):
         if not data.startswith(PDF_SIGNATURE):
             raise AppError("This file has a PDF name but is not a PDF.")
@@ -87,34 +95,52 @@ def _pdf_pages(data: bytes) -> list[PageImage]:
     except ImportError as exc:  # pragma: no cover - the image always installs pdf2image
         raise AppError("PDF support is not installed in this environment.") from exc
 
+    # Poppler's working files stay in a private temp directory and are removed
+    # before this function returns. The directory name is not taken from the upload.
+    folder = Path(tempfile.mkdtemp(prefix="quote-pages-"))
     try:
-        rendered = convert_from_bytes(
-            data,
-            dpi=140,
-            fmt="png",
-            thread_count=1,
-            # Poppler writes its working files here. The container mounts /tmp
-            # as a tmpfs, so those files disappear when the container stops.
-        )
-    except (PDFPageCountError, PDFSyntaxError, PDFPopplerTimeoutError):
-        raise AppError(
-            "Could not read this PDF. It may be encrypted, damaged, or empty."
-        ) from None
-    except Exception as exc:
-        # pdf2image raises a plain exception when the poppler binary is missing
-        # or the file is password-protected. Keep the detail, drop any path
-        # noise, and never include request secrets (there are none here).
-        message = str(exc).strip().splitlines()[0] if str(exc).strip() else "unknown error"
-        lowered = message.lower()
-        if "password" in lowered or "encrypted" in lowered:
-            raise AppError("This PDF is encrypted. Export a copy without a password and upload that.") from None
-        if "poppler" in lowered or "pdftoppm" in lowered or "pdfinfo" in lowered:
-            raise AppError("PDF rendering is unavailable because Poppler is not installed.") from None
-        raise AppError(f"Could not render this PDF. {message}") from None
+        try:
+            rendered = convert_from_bytes(
+                data,
+                dpi=140,
+                fmt="png",
+                thread_count=1,
+                timeout=PDF_RENDER_TIMEOUT_SECONDS,
+                output_folder=str(folder),
+            )
+        except (PDFPageCountError, PDFSyntaxError, PDFPopplerTimeoutError):
+            raise AppError(
+                "Could not read this PDF. It may be encrypted, damaged, or empty."
+            ) from None
+        except Exception as exc:
+            # pdf2image raises a plain exception when Poppler is missing or the
+            # file is password-protected. The message can contain a temp path,
+            # so the UI only gets a fixed sentence.
+            lowered = str(exc).lower()
+            if "password" in lowered or "encrypted" in lowered:
+                raise AppError(
+                    "This PDF is encrypted. Export a copy without a password and upload that."
+                ) from None
+            if "poppler" in lowered or "pdftoppm" in lowered or "pdfinfo" in lowered:
+                raise AppError("PDF rendering is unavailable because Poppler is not installed.") from None
+            raise AppError("Could not render this PDF. It may be damaged or use an unsupported feature.") from None
 
-    if not rendered:
-        raise AppError("This PDF has no pages.")
-    return [_pil_to_page(image, index) for index, image in enumerate(rendered, start=1)]
+        if not rendered:
+            raise AppError("This PDF has no pages.")
+        return [_pil_to_page(image, index) for index, image in enumerate(rendered, start=1)]
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def bundled_sample_path() -> Path:
+    """Return the shipped sample, and refuse a path that escapes samples/."""
+
+    root = Path(__file__).resolve().parent.parent
+    samples = (root / "samples").resolve()
+    candidate = (samples / "northwind_quote.pdf").resolve()
+    if not path_within(candidate, samples) or not candidate.is_file():
+        raise AppError("The bundled sample is missing from the samples folder.")
+    return candidate
 
 
 def _image_page(data: bytes, page_number: int) -> PageImage:

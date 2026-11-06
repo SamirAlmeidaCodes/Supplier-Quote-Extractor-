@@ -20,6 +20,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.config import MAX_LINE_ITEMS, MAX_MODEL_WARNINGS, MAX_TEXT_CHARS, MAX_WARNING_CHARS
 from app.errors import AppError
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -49,10 +50,16 @@ def clamp_unit_interval(value: object) -> float:
     return number
 
 
-def empty_string(value: object) -> str:
+def empty_string(value: object, limit: int = MAX_TEXT_CHARS) -> str:
+    """Coerce model text and drop control characters and oversized values."""
+
     if value is None:
         return ""
-    return str(value).strip()
+    text = str(value).strip()
+    text = "".join(char for char in text if char in "\n\t" or char.isprintable())
+    if len(text) > limit:
+        return text[:limit]
+    return text
 
 
 class LineItem(BaseModel):
@@ -193,6 +200,8 @@ class SupplierQuote(BaseModel):
     def _items(cls, value: object) -> object:
         if value is None:
             return []
+        if isinstance(value, list) and len(value) > MAX_LINE_ITEMS:
+            return value[:MAX_LINE_ITEMS]
         return value
 
     @field_validator("model_warnings", mode="before")
@@ -201,11 +210,17 @@ class SupplierQuote(BaseModel):
         if value is None:
             return []
         if isinstance(value, str):
-            text = value.strip()
-            return [text] if text else []
-        if isinstance(value, list):
-            return [str(item).strip() for item in value if str(item).strip()]
-        return []
+            items: list[object] = [value]
+        elif isinstance(value, list):
+            items = list(value)
+        else:
+            return []
+        cleaned: list[str] = []
+        for item in items[:MAX_MODEL_WARNINGS]:
+            text = empty_string(item, MAX_WARNING_CHARS)
+            if text:
+                cleaned.append(text)
+        return cleaned
 
 
 # Header fields shown in the review table, in display order.

@@ -1,5 +1,5 @@
 # Local-only Supplier Quote Extractor.
-# No environment file, no secrets, and no volumes. API keys are pasted into
+# No environment file and no volumes. API keys are pasted into
 # the UI and are never provided to the container.
 
 name: supplier-quote-extractor
@@ -10,6 +10,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: supplier-quote-extractor:local
+    user: "10001:10001"
     ports:
       - "8501:8501"
     read_only: true

@@ -35,3 +35,23 @@ def test_bad_files_are_rejected() -> None:
         load_document(b"not a document", "notes.txt")
     with pytest.raises(AppError, match="not a PDF"):
         load_document(b"hello", "quote.pdf")
+
+
+def test_upload_names_cannot_escape_the_display_name() -> None:
+    document = load_document(PNG.read_bytes(), r"../../etc/passwd.png")
+    assert document.filename == "passwd.png"
+    assert "/" not in document.filename
+    assert ".." not in document.filename
+
+
+def test_pdf_errors_do_not_include_local_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    def explode(*_args: object, **_kwargs: object) -> list[object]:
+        raise RuntimeError("renderer failed on /tmp/quote-pages-secret/input.pdf")
+
+    monkeypatch.setattr("pdf2image.convert_from_bytes", explode)
+    with pytest.raises(AppError) as caught:
+        load_document(b"%PDF-1.4\n", "quote.pdf")
+    message = str(caught.value)
+    assert "/tmp/" not in message
+    assert "quote-pages-secret" not in message
+    assert "Could not render this PDF" in message

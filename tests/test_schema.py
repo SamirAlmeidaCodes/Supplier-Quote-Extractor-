@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from app.config import MAX_LINE_ITEMS, MAX_TEXT_CHARS
 from app.schema import QUOTE_JSON_SCHEMA, SupplierQuote, clamp_unit_interval, parse_quote_json, strict_json_schema
 from app.schema import LineItem
 
@@ -47,6 +48,23 @@ def test_parse_strips_a_json_fence_and_clamps_scores() -> None:
     assert quote.supplier_name == "Acme"
     assert quote.supplier_name_confidence == 0.95
     assert quote.line_items == []
+
+
+def test_text_and_line_items_are_bounded() -> None:
+    quote = SupplierQuote.model_validate(
+        {
+            "supplier_name": "A\x00B" + ("n" * 5000),
+            "notes": "ok\r\nline",
+            "line_items": [{"description": "row"}] * (MAX_LINE_ITEMS + 25),
+            "model_warnings": ["=cmd|'/C calc'!A0"] + ["warn"] * 40,
+        }
+    )
+    assert "\x00" not in quote.supplier_name
+    assert len(quote.supplier_name) == MAX_TEXT_CHARS
+    assert quote.notes == "ok\nline"
+    assert len(quote.line_items) == MAX_LINE_ITEMS
+    assert len(quote.model_warnings) == 30
+    assert quote.model_warnings[0].startswith("=cmd")
 
 
 def test_confidence_clamps_out_of_range_values() -> None:

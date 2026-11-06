@@ -30,18 +30,30 @@ There is no volume to delete. Uploads live in a temporary filesystem that disapp
 
 The first build downloads Python and Poppler. Later starts are faster.
 
-## Security
+## Security notes
 
-- The only place a key enters the app is the sidebar password field after the container is running.
-- The key is held in Streamlit's in-memory session for that browser tab. Closing the session drops it.
-- The app does not read environment variables, does not call `load_dotenv`, and does not write a `.env`, `secrets.toml`, or any other file that contains the key.
+Paste a provider key into the sidebar password field after the app is running. That is the only place a key enters. It is held in Streamlit's in-memory session for that browser tab. Closing the session drops it.
+
+Handle secrets this way:
+
+- Do not put a real key in a file. `.env.example` holds one dummy value, `EXAMPLE_NOT_A_SECRET`, and the application never reads that file.
+- `.gitignore` ignores `.env`, other `.env.*` files, `secrets/`, private keys, local databases, logs, and model artifacts. `.env.example` stays tracked because it has no credential.
+- The application code does not read API keys from the environment and does not call `load_dotenv`. It does not write `.env`, `secrets.toml`, or any other file that contains the key.
 - Provider calls put the key in a request header only. It is not placed in the JSON body or the URL. Gemini's key is sent as `x-goog-api-key`, not as a query parameter.
-- Error text and server logs pass through a redaction filter before they are shown.
-- The container filesystem is read-only. `/tmp` and the app user's home directory are tmpfs mounts, so rasterized pages and Streamlit's own session files are not stored on disk.
-- The image is built without secrets and the Compose file has no `env_file` and no `secrets`.
+- The image build context excludes credential files (see `.dockerignore`). The container runs as `appuser` (uid 10001), and Compose mounts a read-only root filesystem. `/tmp` and the app user's home directory are tmpfs mounts, so rasterized pages and Streamlit session files are not stored on disk.
 - xAI is called with chat completions, not the Responses API. The Responses API stores response objects for 30 days. The provider still processes the quote under its own retention policy for that request.
 
-Do not add a `.env` file for this project. A key left on disk is outside the threat model this app is built for.
+Other production settings:
+
+- Uncaught errors shown in the browser are generic. Stack traces, exception text, and filesystem paths stay off the page. `client.showErrorDetails` is `none`, rich tracebacks are off, and the ASGI app is constructed with debug mode disabled.
+- Logs pass through a redaction filter. A log line keeps the exception type and drops the traceback.
+- `streamlit run app/asgi.py` adds response headers (`nosniff`, `DENY` framing, a content security policy, and related headers). CORS protection and XSRF protection stay on. WebSocket hosts are limited to `localhost` and `127.0.0.1`. Add a name to `server.allowedHosts` in `.streamlit/config.toml` if the browser uses another host.
+- Extraction is rate-limited: one request every few seconds per browser session, and a process-wide cap per minute.
+- Uploads are size-limited, type-checked, and given a sanitized display name. PDF rendering writes only under a private temp directory, which is removed when rendering finishes. The renderer timeout is 60 seconds.
+- CSV and Excel cells that start with a formula character are prefixed so a spreadsheet does not treat them as formulas.
+- Dependencies are pinned. Run `./scripts/audit_deps.sh` to execute `pip-audit` against `requirements.txt` and `requirements-dev.txt`.
+
+A key left on disk is outside the threat model this app is built for.
 
 ## Get an API key
 
@@ -127,12 +139,16 @@ The script needs DejaVu Sans or Liberation Sans.
 ## How the code is split
 
 ```
-app/main.py         Streamlit entry point
+app/main.py         Streamlit UI script
+app/asgi.py         Server entrypoint, headers, generic script errors
 app/ui.py           Sidebar, preview, editors, downloads
 app/documents.py    PDF rasterizing and image normalization
 app/prompts.py      Extraction instructions
 app/providers.py    xAI, OpenAI, Anthropic, and Gemini calls
 app/schema.py       Pydantic models and strict JSON Schema
+app/inputs.py       Sidebar, model id, and filename checks
+app/limits.py       Extraction rate limit
+app/http_security.py  Response headers
 app/extraction.py   Batching and multi-page merge
 app/quality.py      Review flags
 app/export.py       CSV and Excel
@@ -150,10 +166,18 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest
-streamlit run app/main.py
+streamlit run app/asgi.py
 ```
 
-`python-dotenv` is installed because it is part of the requested stack. The application never imports it.
+Run that command from this directory so Streamlit loads `.streamlit/config.toml`. `app/asgi.py` serves `app/main.py` and adds the response headers.
+
+`python-dotenv` is pinned because it is part of the requested stack. The application never imports it.
+
+Check the pinned requirements for known vulnerabilities:
+
+```bash
+./scripts/audit_deps.sh
+```
 
 ## Tests
 

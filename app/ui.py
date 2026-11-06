@@ -10,34 +10,26 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from dataclasses import dataclass
+import secrets
 from pathlib import Path
 
 import streamlit as st
+from pydantic import ValidationError
 
 from app.config import DEFAULT_REVIEW_THRESHOLD, PROVIDERS
-from app.documents import PreparedDocument, load_document
+from app.documents import PreparedDocument, bundled_sample_path, load_document
 from app.errors import AppError
 from app.export import build_csv, build_excel
 from app.extraction import ExtractionResult, extract_document
+from app.inputs import SessionSettings
+from app.limits import extraction_limiter
 from app.providers import get_provider
 from app.quality import header_frame, line_frame, review_issues
 from app.redact import redact
 
 logger = logging.getLogger(__name__)
 
-SAMPLE_PATH = Path(__file__).resolve().parent.parent / "samples" / "northwind_quote.pdf"
 _SAFE_STEM = re.compile(r"[^A-Za-z0-9._-]+")
-
-
-@dataclass(frozen=True)
-class Settings:
-    provider_id: str
-    provider_label: str
-    api_key: str
-    model: str
-    mode: str
-    threshold: float
 
 
 def render() -> None:
@@ -47,6 +39,8 @@ def render() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    # Hide exception types, messages, and tracebacks if a later call escapes.
+    st.set_option("client.showErrorDetails", "none")
     settings = _sidebar()
 
     st.title("Supplier Quote Extractor", icon=":material/request_quote:")
@@ -71,7 +65,7 @@ def render() -> None:
     _render_lines_and_downloads(document, result, settings.threshold)
 
 
-def _sidebar() -> Settings:
+def _sidebar() -> SessionSettings:
     st.sidebar.header("Model")
     labels = [spec.label for spec in PROVIDERS]
     selected = st.sidebar.selectbox("Provider", labels, index=0)
@@ -118,14 +112,29 @@ def _sidebar() -> Settings:
         "This app does not write it to disk, logs, a .env file, or the container image. "
         "Closing the session drops it."
     )
-    return Settings(
-        provider_id=spec.id,
-        provider_label=spec.label,
-        api_key=api_key,
-        model=override.strip() or spec.default_model,
-        mode="per_page" if mode_label == "Page by page, then merge" else "combined",
-        threshold=threshold_pct / 100.0,
-    )
+    mode = "per_page" if mode_label == "Page by page, then merge" else "combined"
+    threshold = round(threshold_pct / 100.0, 2)
+    try:
+        return SessionSettings(
+            provider_id=spec.id,
+            provider_label=spec.label,
+            api_key=api_key,
+            model=override.strip() or spec.default_model,
+            mode=mode,
+            threshold=threshold,
+        )
+    except ValidationError:
+        st.sidebar.error(
+            "The model id or API key is not valid. Nothing is sent until both are accepted."
+        )
+        return SessionSettings(
+            provider_id=spec.id,
+            provider_label=spec.label,
+            api_key="",
+            model=spec.default_model,
+            mode=mode,
+            threshold=threshold,
+        )
 
 
 def _document_picker() -> PreparedDocument | None:
@@ -148,10 +157,12 @@ def _document_picker() -> PreparedDocument | None:
             return None
         payload, filename = upload.getvalue(), upload.name
     else:
-        if not SAMPLE_PATH.is_file():
-            st.error("The bundled sample is missing from the samples folder.")
+        try:
+            sample = bundled_sample_path()
+        except AppError as exc:
+            st.error(str(exc))
             return None
-        payload, filename = SAMPLE_PATH.read_bytes(), SAMPLE_PATH.name
+        payload, filename = sample.read_bytes(), sample.name
         st.caption("Two-page scanned quote from the fictional supplier Northwind Industrial Supply.")
 
     token = f"{source}:{filename}:{len(payload)}:{hashlib.sha256(payload).hexdigest()[:16]}"
@@ -187,13 +198,13 @@ def _render_preview(document: PreparedDocument) -> None:
 
 def _render_detail(
     document: PreparedDocument,
-    settings: Settings,
+    settings: SessionSettings,
     result: ExtractionResult | None,
 ) -> ExtractionResult | None:
     """Right-hand column: the extract action and the editable header."""
 
     st.subheader("Extracted quote")
-    has_key = bool(settings.api_key.strip())
+    has_key = bool(settings.revealed_key())
     if not has_key:
         st.info("Paste an API key in the sidebar. Extraction stays disabled until you do.")
 
@@ -231,11 +242,24 @@ def _render_detail(
     return result
 
 
+def _session_tag() -> str:
+    tag = st.session_state.get("_session_tag")
+    if not isinstance(tag, str) or len(tag) != 32:
+        tag = secrets.token_hex(16)
+        st.session_state._session_tag = tag
+    return tag
+
+
 def _run_extraction(
     document: PreparedDocument,
-    settings: Settings,
+    settings: SessionSettings,
     result: ExtractionResult | None,
 ) -> ExtractionResult | None:
+    limited = extraction_limiter.check(_session_tag())
+    if limited:
+        st.error(limited)
+        return result
+
     with st.status("Extracting quote data…", expanded=True) as status:
         def on_progress(message: str) -> None:
             status.write(message)
@@ -244,7 +268,7 @@ def _run_extraction(
             extracted = extract_document(
                 document,
                 get_provider(settings.provider_id),
-                api_key=settings.api_key,
+                api_key=settings.revealed_key(),
                 model=settings.model,
                 mode=settings.mode,
                 on_progress=on_progress,
@@ -253,8 +277,8 @@ def _run_extraction(
             status.update(label="Extraction failed", state="error")
             st.error(str(exc))
             return result
-        except Exception:
-            logger.exception("Unexpected extraction failure")
+        except Exception as exc:
+            logger.error("Unexpected extraction failure (%s)", type(exc).__name__)
             status.update(label="Extraction failed", state="error")
             st.error(
                 "Extraction failed for an unexpected reason. "

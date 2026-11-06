@@ -3,6 +3,8 @@
 # Builder installs wheels into an isolated prefix so the runtime image does
 # not keep pip's cache. The runtime image adds Poppler, which pdf2image uses
 # to rasterize PDF quotes.
+# Credential files are excluded from the build context. Do not replace the
+# COPY lines below with a copy of the whole directory.
 FROM python:3.12-slim-bookworm AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -33,9 +35,10 @@ RUN apt-get update \
 COPY --from=builder /install /usr/local
 
 WORKDIR /app
-COPY app ./app
-COPY samples ./samples
-COPY .streamlit ./.streamlit
+COPY --chown=appuser:appuser app ./app
+COPY --chown=appuser:appuser samples ./samples
+COPY --chown=appuser:appuser .streamlit ./.streamlit
+RUN chmod -R a-w /app
 
 USER appuser
 EXPOSE 8501
@@ -43,4 +46,4 @@ EXPOSE 8501
 HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health')"]
 
-CMD ["streamlit", "run", "app/main.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "app/asgi.py", "--server.port=8501", "--server.address=0.0.0.0"]
